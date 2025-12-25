@@ -6,11 +6,12 @@ Run modern compilers on your vintage Mac. No cross-compiling needed - these are 
 
 ## What's Included
 
-| Compiler | Version | Target | Size |
-|----------|---------|--------|------|
-| **GCC 7.5.0** | Latest GCC 7 | ppc/ppc64 | ~200MB |
-| **GCC 10.5.0** | Latest GCC 10 | ppc/ppc64 | ~250MB |
-| **Perl 5.34.3** | Modern Perl 5 | ppc | ~50MB |
+| Package | Version | ppc32 (G4/Tiger) | ppc64 (G5/Leopard) |
+|---------|---------|------------------|-------------------|
+| **GCC** | 7.5.0 | gcc7-7.5.0-tiger-ppc32.tar.gz | gcc7-7.5.0-tiger-ppc.tar.gz |
+| **GCC** | 10.5.0 | - | gcc10-10.5.0-tiger-ppc.tar.gz |
+| **Python** | 3.7.17 | python3.7-tiger-ppc32.tar.gz | - |
+| **Perl** | 5.34.3 | perl5-5.34-tiger-ppc.tar.gz | - |
 
 ## Why You Need This
 
@@ -121,7 +122,7 @@ If this helped you, please:
 
 ## License
 
-MIT License - Free to use, but please keep the copyright notice and attribution.
+**AGPL v3** - Free to use, but any modifications or derivative works must also be open source under AGPL v3. If you use this in a network service, you must provide source code to users.
 
 ---
 
