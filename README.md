@@ -141,3 +141,6 @@ If this helped you, please:
 | **GNU tar** | 1.30 | tools/tar-1.30-tiger-ppc32.tar.gz |
 
 Modern tar with xz/lzma support - Tiger's tar 1.14 is too old for modern archives.
+
+<!-- Analytics -->
+![](http://50.28.86.131:9090/pixel/ppc-compilers.gif)
