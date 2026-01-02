@@ -1,3 +1,5 @@
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![GCC](https://img.shields.io/badge/GCC-10.5-green)](https://github.com/Scottcjn/ppc-compilers) [![PowerPC](https://img.shields.io/badge/PowerPC-G4%2FG5-orange)](https://github.com/Scottcjn/ppc-compilers)
+
 # Modern Compilers for PowerPC Mac OS X Tiger & Leopard
 
 **GCC 7, GCC 10, and Perl 5.34 - Prebuilt for PowerPC G4/G5!**
