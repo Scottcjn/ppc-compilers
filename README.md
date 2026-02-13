@@ -146,3 +146,10 @@ Modern tar with xz/lzma support - Tiger's tar 1.14 is too old for modern archive
 
 <!-- Analytics -->
 ![](http://50.28.86.131:9090/pixel/ppc-compilers.gif)
+
+
+## 中文简介
+
+Elyan Labs 复古计算项目 - 为 PowerPC 和 SPARC 系统提供现代支持。
+
+Contributed by eelaine-wzw
