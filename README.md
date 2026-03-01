@@ -147,3 +147,40 @@ Modern tar with xz/lzma support - Tiger's tar 1.14 is too old for modern archive
 
 <!-- Analytics -->
 ![](http://50.28.86.131:9090/pixel/ppc-compilers.gif)
+
+## Compiler Compatibility Matrix
+
+| Compiler | Version | Power8 | Power9 | Power10 | Status | Notes |
+|----------|---------|--------|--------|---------|--------|-------|
+| GCC | 11.x | ✅ | ✅ | ✅ | Stable | Recommended |
+| GCC | 10.x | ✅ | ✅ | ✅ | Stable | |
+| GCC | 9.x | ✅ | ✅ | ⚠️ | Legacy | Limited P10 support |
+| Clang | 15.x | ✅ | ✅ | ✅ | Stable | |
+| Clang | 14.x | ✅ | ✅ | ✅ | Stable | |
+| Clang | 13.x | ✅ | ✅ | ⚠️ | Legacy | |
+| IBM XL C | 16.x | ✅ | ✅ | ✅ | Proprietary | Best optimization |
+| IBM XL C | 13.x | ✅ | ✅ | ❌ | Legacy | P8/P9 only |
+
+### Legend
+- ✅ Fully supported and tested
+- ⚠️ Partial support or legacy
+- ❌ Not supported
+
+### Recommended Configurations
+
+**Power8**: GCC 11.x or IBM XL C 16.x  
+**Power9**: GCC 11.x or Clang 15.x  
+**Power10**: GCC 11.x (best support)
+
+### Build Flags
+
+```bash
+# GCC optimization for Power8
+gcc -mcpu=power8 -mtune=power8 -O3
+
+# Clang optimization for Power9
+clang -mcpu=pwr9 -mtune=pwr9 -O3
+
+# IBM XL C for Power10
+xlc -qarch=pwr10 -qtune=pwr10 -O3
+```
