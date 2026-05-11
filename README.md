@@ -1,4 +1,4 @@
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![GCC](https://img.shields.io/badge/GCC-10.5-green)](https://github.com/Scottcjn/ppc-compilers) [![PowerPC](https://img.shields.io/badge/PowerPC-G4%2FG5-orange)](https://github.com/Scottcjn/ppc-compilers)
+[![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE) [![GCC](https://img.shields.io/badge/GCC-10.5-green)](https://github.com/Scottcjn/ppc-compilers) [![PowerPC](https://img.shields.io/badge/PowerPC-G4%2FG5-orange)](https://github.com/Scottcjn/ppc-compilers)
 [![BCOS Certified](https://img.shields.io/badge/BCOS-Certified-brightgreen?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAxTDMgNXY2YzAgNS41NSAzLjg0IDEwLjc0IDkgMTIgNS4xNi0xLjI2IDktNi40NSA5LTEyVjVsLTktNHptLTIgMTZsLTQtNCA1LjQxLTUuNDEgMS40MSAxLjQxTDEwIDE0bDYtNiAxLjQxIDEuNDFMMTAgMTd6Ii8+PC9zdmc+)](BCOS.md)
 
 # Modern Compilers for PowerPC Mac OS X Tiger & Leopard
