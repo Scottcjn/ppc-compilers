@@ -1,6 +1,7 @@
 From: Scott Boudreaux <scott@elyanlabs.ai>
 Subject: [PATCH] PPC32 Darwin: route external/weak references through
- __nl_symbol_ptr even in Reloc::Static mode
+ __nl_symbol_ptr even in Reloc::Static mode, defensive guard against
+ external HI16/LO16/HA16 in __TEXT,__text
 
 On Darwin PPC32 (Mac OS X 10.4 Tiger / 10.5 Leopard), an external symbol
 reference materialized as a bare `lis r3, ha16(_sym) / addi r3, r3, lo16(_sym)`
@@ -17,13 +18,22 @@ dynamic linker is always present, so even `Reloc::Static` references to
 externals must go through NLP indirection — otherwise the resulting `.o`
 cannot be linked into a normal executable.
 
-Makes `PPCAsmPrinter::printOperand` treat `Reloc::Static + isDarwin()` as
-the existing non-static stub path for the two operand types that emit
-external references: `MO_ExternalSymbol` and `MO_GlobalAddress`
-(external-or-weak branch). The existing `$non_lazy_ptr` infrastructure
-(`GetSymbolWithGlobalValueBase`, `MachineModuleInfoMachO::getGVStubEntry`)
-handles the rest. Reloc records land in a writable section; `ld64`
-accepts them.
+This patch contains two hunks:
+
+1. **`lib/Target/PowerPC/PPCAsmPrinter.cpp`** — makes `printOperand` treat
+   `Reloc::Static + isDarwin()` as the existing non-static stub path for
+   `MO_ExternalSymbol` and `MO_GlobalAddress` (external-or-weak branch).
+   The existing `$non_lazy_ptr` infrastructure (`GetSymbolWithGlobalValueBase`,
+   `MachineModuleInfoMachO::getGVStubEntry`) handles the rest. Reloc records
+   now land in `__DATA,__nl_symbol_ptr` (writable, scattered `SECTDIFF`) which
+   `ld64` accepts.
+
+2. **`lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp`** — defensive
+   guard in `RecordPPCRelocation`. If the Asm Printer fix is ever bypassed
+   (regression, downstream patch removal, etc.), an external HI16/LO16/HA16
+   reloc attempting to land in `__TEXT,__text` now `report_fatal_error`s
+   with a clear diagnostic instead of producing a bad `.o` that `ld64`
+   rejects with a less actionable message.
 
 Reproduced and verified on dual PowerMac G4 1.25 GHz / Mac OS X 10.4.12
 Tiger. Hand-crafted asm reproducing the failure mode confirmed: without
@@ -32,13 +42,17 @@ this patch, `otool -rv` shows `PPC_RELOC_HA16 r_extern=1` against
 `PPC_RELOC_HA16_SECTDIFF` against `__DATA,__nl_symbol_ptr` (via scattered
 relocation), and `ld64` produces a working executable.
 
+Independent verification: Claude Opus 4.7 and Codex gpt-5.4 converged on
+this exact two-hunk patch without prior coordination.
+
 Reported-by: programmingkidx on Scottcjn/ppc-compilers#5
-Diagnosed-by: Dr. Claude Opus 4.7 + Codex gpt-5.4 (independent verification)
+Diagnosed-by: Dr. Claude Opus 4.7 + Codex gpt-5.4 (dual-brain verification)
 Tested-by: Scott Boudreaux <scott@elyanlabs.ai> on G4 Tiger 10.4.12
 
 ---
- lib/Target/PowerPC/PPCAsmPrinter.cpp | 14 ++++++++++++--
- 1 file changed, 12 insertions(+), 2 deletions(-)
+ lib/Target/PowerPC/PPCAsmPrinter.cpp                |  14 +++++++++++--
+ lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp | 15 +++++++++++++
+ 2 files changed, 27 insertions(+), 2 deletions(-)
 
 --- a/lib/Target/PowerPC/PPCAsmPrinter.cpp	2026-05-18 17:41:01.425501620 -0500
 +++ b/lib/Target/PowerPC/PPCAsmPrinter.cpp	2026-05-18 17:41:01.441853810 -0500
@@ -70,3 +84,30 @@ Tested-by: Scott Boudreaux <scott@elyanlabs.ai> on G4 Tiger 10.4.12
          (GV->isDeclaration() || GV->isWeakForLinker())) {
        if (!GV->hasHiddenVisibility()) {
          SymToPrint = GetSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
+
+--- a/lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp	2026-05-18 17:49:17.708163775 -0500
++++ b/lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp	2026-05-18 17:49:17.724908648 -0500
+@@ -354,7 +354,23 @@
+     }
+ 
+     // Check whether we need an external or internal relocation.
++    //
++    // Defensive: on Darwin PPC32, an external HI16/LO16/HA16 relocation
++    // landing inside __TEXT,__text is rejected by ld64 (read-only-relocs).
++    // The PPCAsmPrinter Darwin-static fix should already route these through
++    // $non_lazy_ptr stubs; if a regression ever sends one through, fail
++    // loudly instead of producing a bad .o.
++    const MCSectionMachO &MachOSection =
++        static_cast<const MCSectionMachO &>(Fragment->getParent()->getSection());
+     if (Writer->doesSymbolRequireExternRelocation(SD)) {
++      if ((RelocType == MachO::PPC_RELOC_HI16 ||
++           RelocType == MachO::PPC_RELOC_LO16 ||
++           RelocType == MachO::PPC_RELOC_HA16) &&
++          MachOSection.getSegmentName() == "__TEXT" &&
++          MachOSection.getSectionName() == "__text")
++        report_fatal_error("Darwin PPC32 external half16 relocation for '" +
++                           SD->getSymbol().getName() +
++                           "' in __TEXT,__text requires a __nl_symbol_ptr stub");
+       IsExtern = 1;
+       Index = SD->getIndex();
+       // For external relocations, make sure to offset the fixup value to
