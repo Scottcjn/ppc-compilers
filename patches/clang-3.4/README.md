@@ -9,9 +9,14 @@ executables on Darwin PPC32 (Mac OS X 10.4 / 10.5 PowerPC).
 
 **Root cause**: clang 3.4's `PPCAsmPrinter::printOperand` only routes external symbol references through the `$non_lazy_ptr` stub indirection when `TM.getRelocationModel() != Reloc::Static`. On Darwin PPC32 the dynamic linker is always present, so even static-relocation-model references to externals need NLP indirection — otherwise the bare `lis r3, ha16(_sym)` materializes as a `PPC_RELOC_HA16` Mach-O relocation with `r_extern=1` against the non-writable `__TEXT,__text` section, which `ld64` rejects.
 
-**Fix**: Two-line change at `lib/Target/PowerPC/PPCAsmPrinter.cpp:174` (`MO_ExternalSymbol`) and `:197` (`MO_GlobalAddress` external-or-weak branch). Both conditions now also fire when `Subtarget.isDarwin()`, regardless of relocation model. The existing `$non_lazy_ptr` machinery (`GetSymbolWithGlobalValueBase`, `MachineModuleInfoMachO::getGVStubEntry`) handles the rest — relocations land in `__DATA,__nl_symbol_ptr` (writable) as `PPC_RELOC_HA16_SECTDIFF` against a local NLP label, which is exactly the shape `ld64` expects.
+**The fix has two hunks**:
 
-**Diagnosed by**: dual-brain review (Dr. Claude Opus 4.7 + Codex `gpt-5.4`)
+1. **`lib/Target/PowerPC/PPCAsmPrinter.cpp`** — make `printOperand` treat `Reloc::Static + isDarwin()` as the existing stub path for `MO_ExternalSymbol` and `MO_GlobalAddress` (external-or-weak branch). The existing `$non_lazy_ptr` machinery handles the rest.
+
+2. **`lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp`** — defensive guard. If a regression ever sends an external HI16/LO16/HA16 reloc into `__TEXT,__text`, `report_fatal_error` with a clear diagnostic instead of producing a bad `.o` that `ld64` rejects with a less actionable message.
+
+**Dual-brain verification**: Claude Opus 4.7 and Codex `gpt-5.4` converged on this exact two-hunk patch independently, without coordination.
+
 **Verified on**: dual PowerMac G4 1.25 GHz / Mac OS X 10.4.12 Tiger / `Lee-Crockers-Powermac-G4.local`
 
 ### How to apply
@@ -26,8 +31,15 @@ patch -p1 < /path/to/clang-3.4-darwin-ppc32-external-reloc-stubs.patch
 Then rebuild as usual:
 
 ```bash
-./configure --prefix=/opt/local --enable-optimized
-make -j2          # 2 cores on dual G4 1.25
+PATH=/opt/local/bin:$PATH \
+  CC=/opt/local/bin/gcc-apple-4.2 \
+  CXX=/opt/local/bin/g++-apple-4.2 \
+  PYTHON=/opt/local/bin/python2.7 \
+  ./configure --prefix=/opt/local \
+    --enable-optimized --disable-assertions \
+    --enable-targets=powerpc \
+    --with-python=/opt/local/bin/python2.7
+make -j2 ENABLE_OPTIMIZED=1 DISABLE_ASSERTIONS=1
 sudo make install
 ```
 
@@ -39,10 +51,7 @@ Before the patch:
 cat > hello.c << 'EOF2'
 #include <stdio.h>
 extern int errno;
-int main(void) {
-    printf("errno address: %p\n", (void*)&errno);
-    return 0;
-}
+int main(void) { printf("errno address: %p\n", (void*)&errno); return 0; }
 EOF2
 clang-3.4 hello.c -o hello
 # ld: hello.o has external relocation entries in non-writable section
@@ -56,15 +65,20 @@ clang-3.4 hello.c -o hello
 ./hello
 # errno address: 0xa01234
 otool -rv hello.o
-# Relocation information (__TEXT,__text)
-# address  pcrel length extern type    scattered symbolnum/value
-# 00000018 False long   n/a    HA16    True      0x00000038
-# ...
-# Relocation information (__DATA,__nl_symbol_ptr)
-# 00000000 False long   True   VANILLA False     _errno
+# Relocations now scattered against __DATA,__nl_symbol_ptr — ld64 accepts.
 ```
 
-External relocations now sit in `__DATA,__nl_symbol_ptr` (writable), and `ld64` accepts them.
+### MacPorts integration
+
+Add to the `clang-3.4` Portfile:
+
+```tcl
+patchfiles-append clang-3.4-darwin-ppc32-external-reloc-stubs.patch
+```
+
+### Test regression risk
+
+Tightly scoped: PowerPC + Darwin + `Reloc::Static` corner only. The most likely test fallout would be in `test/CodeGen/PowerPC/*-darwin*.ll` or `test/MC/PowerPC/ppc-reloc.s` if any test asserts on bare external relocs under `-relocation-model=static`. Those would need updates to expect the indirection path; that's the correct expectation now.
 
 ### Upstream status
 
