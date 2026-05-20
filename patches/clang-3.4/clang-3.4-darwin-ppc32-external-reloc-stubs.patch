@@ -88,6 +88,7 @@ Tested-by: Scott Boudreaux <scott@elyanlabs.ai>
 
 ---
  lib/Target/PowerPC/PPCSubtarget.cpp                     |  8 +++++++-
+ lib/Target/PowerPC/PPCISelLowering.cpp                  | 14 ++++++++++---
  lib/Target/PowerPC/PPCAsmPrinter.cpp                    | 14 ++++++++++++--
  lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp | 15 +++++++++++++
  3 files changed, 34 insertions(+), 3 deletions(-)
@@ -167,3 +168,34 @@ Tested-by: Scott Boudreaux <scott@elyanlabs.ai>
        IsExtern = 1;
        Index = SD->getIndex();
        // For external relocations, make sure to offset the fixup value to
+
+--- a/lib/Target/PowerPC/PPCISelLowering.cpp
++++ b/lib/Target/PowerPC/PPCISelLowering.cpp
+@@ -3214,8 +3214,11 @@
+     // far-call stubs may be outside relocation limits for a BL instruction.
+     if (!DAG.getTarget().getSubtarget<PPCSubtarget>().isJITCodeModel()) {
+       unsigned OpFlags = 0;
+-      if (DAG.getTarget().getRelocationModel() != Reloc::Static &&
+-          (PPCSubTarget.getTargetTriple().isMacOSX() &&
++      // Darwin PPC32 (pre-Leopard / Tiger) needs an explicit $stub for every
++      // external/weak call regardless of relocation model. Tiger ld64 does
++      // not auto-synthesize call stubs; a direct bl to an external symbol
++      // produces a BR24 reloc in __TEXT,__text that the linker rejects.
++      if ((PPCSubTarget.getTargetTriple().isMacOSX() &&
+            PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5)) &&
+           (G->getGlobal()->isDeclaration() ||
+            G->getGlobal()->isWeakForLinker())) {
+@@ -3238,9 +3241,10 @@
+   if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
+     unsigned char OpFlags = 0;
+ 
+-    if (DAG.getTarget().getRelocationModel() != Reloc::Static &&
+-        (PPCSubTarget.getTargetTriple().isMacOSX() &&
+-         PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5))) {
++    // Darwin PPC32 (pre-Leopard / Tiger): external calls need $stub regardless
++    // of relocation model (Tiger ld64 does not auto-synthesize call stubs).
++    if (PPCSubTarget.getTargetTriple().isMacOSX() &&
++        PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5)) {
+       // PC-relative references to external symbols should go through $stub,
+       // unless we're building with the leopard linker or later, which
+       // automatically synthesizes these stubs.
