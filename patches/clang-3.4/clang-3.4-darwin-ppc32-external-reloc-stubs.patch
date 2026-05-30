@@ -1,0 +1,201 @@
+From: Scott Boudreaux <scott@elyanlabs.ai>
+Subject: [PATCH v3] PPC32 Darwin: route external/weak references through
+ __nl_symbol_ptr even in Reloc::Static mode
+
+On Darwin PPC32 (Mac OS X 10.4 Tiger / 10.5 Leopard), an external symbol
+reference materialized as a bare `lis r3, ha16(_sym) / addi r3, r3, lo16(_sym)`
+inside `__TEXT,__text` produces a Mach-O relocation with `r_extern=1`
+against a non-writable section. `ld64` rejects this with:
+
+    ld: <object> has external relocation entries in non-writable section
+        (__TEXT,__text) for symbol <name>
+
+clang 3.4 only routes external references through the `$non_lazy_ptr` stub
+machinery (which targets the writable `__DATA,__nl_symbol_ptr` section)
+when `TM.getRelocationModel() != Reloc::Static`. But on Darwin PPC32 the
+dynamic linker is always present, so even `Reloc::Static` references to
+externals must go through NLP indirection — otherwise the resulting `.o`
+cannot be linked into a normal executable.
+
+This patch contains three hunks. The *load-bearing* one is hunk 3
+(`PPCSubtarget.cpp::hasLazyResolverStub`) which is the actual predicate
+queried by `PPCISelLowering::GetLabelAccessInfo` to decide whether to set
+`MO_NLP_FLAG` on the operand. Once the flag is set, the existing
+`PPCMCInstLower::GetSymbolFromOperand` machinery automatically appends
+`$non_lazy_ptr` and emits the canonical scattered SECTDIFF relocation
+against the local NLP label.
+
+Hunks 1 and 2 (`PPCAsmPrinter.cpp` and `PPCMachObjectWriter.cpp`) are
+defensive — they cover the textual `.s` emission path and add a
+fail-loud guard if a future regression ever lets an external
+HI16/LO16/HA16 leak into `__TEXT,__text`.
+
+1. **`lib/Target/PowerPC/PPCSubtarget.cpp`** (THE LOAD-BEARING FIX) —
+   `hasLazyResolverStub` now returns true for Darwin PPC32 even in
+   `Reloc::Static`. Triggers `MO_NLP_FLAG` on the operand which routes
+   the MCInst lowering through `$non_lazy_ptr`.
+
+2. **`lib/Target/PowerPC/PPCAsmPrinter.cpp`** (defensive) — makes
+   `printOperand` treat `Reloc::Static + isDarwin()` as the existing
+   non-static stub path for `MO_ExternalSymbol` and `MO_GlobalAddress`
+   (external-or-weak branch). Covers the textual `.s` emission path.
+
+3. **`lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp`**
+   (defensive) — `report_fatal_error` if an external `HI16/LO16/HA16`
+   reloc ever tries to land in `__TEXT,__text`. Future-regression net.
+
+VERIFIED on real hardware:
+
+  Dual PowerMac G4 1.25 GHz / Mac OS X 10.4.12 Tiger
+  (`Lee-Crockers-Powermac-G4.local`)
+
+Test case `extref.ll`:
+
+    target triple = "powerpc-apple-darwin8"
+    @errno = external global i32
+    define i32* @get_errno_addr() { ret i32* @errno }
+
+Patched `llc -relocation-model=static` produces:
+
+    lis r2, ha16(L_errno$non_lazy_ptr)
+    lwz r3, lo16(L_errno$non_lazy_ptr)(r2)
+    .section __DATA,__nl_symbol_ptr,non_lazy_symbol_pointers
+    L_errno$non_lazy_ptr:
+        .indirect_symbol  _errno
+        .long 0
+
+`otool -rv extref.o`:
+
+    External relocation information 0 entries
+    Local relocation information 0 entries
+    Relocation information (__TEXT,__text) 4 entries
+    00000004  LO16  →  3 (__DATA,__nl_symbol_ptr)
+              PAIR  half = 0x0000
+    00000000  HA16  →  3 (__DATA,__nl_symbol_ptr)
+              PAIR  half = 0x000c
+
+`ld64` accepts. End-to-end:
+
+    test/mainref: Mach-O executable ppc
+    ./test/mainref ; echo "EXIT: $?"
+    EXIT: 28
+
+Reported-by: programmingkidx on Scottcjn/ppc-compilers#5
+Diagnosed-by: Claude Opus 4.7 + Codex gpt-5.4 (dual-brain), iterated to
+              hasLazyResolverStub after empirical test on real G4 showed
+              the asmprinter-only fix was insufficient.
+Tested-by: Scott Boudreaux <scott@elyanlabs.ai>
+
+---
+ lib/Target/PowerPC/PPCSubtarget.cpp                     |  8 +++++++-
+ lib/Target/PowerPC/PPCISelLowering.cpp                  | 14 ++++++++++---
+ lib/Target/PowerPC/PPCAsmPrinter.cpp                    | 14 ++++++++++++--
+ lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp | 15 +++++++++++++
+ 3 files changed, 34 insertions(+), 3 deletions(-)
+
+--- a/lib/Target/PowerPC/PPCSubtarget.cpp
++++ b/lib/Target/PowerPC/PPCSubtarget.cpp
+@@ -152,7 +152,13 @@
+ bool PPCSubtarget::hasLazyResolverStub(const GlobalValue *GV,
+                                        const TargetMachine &TM) const {
+   // We never have stubs if HasLazyResolverStubs=false or if in static mode.
+-  if (!HasLazyResolverStubs || TM.getRelocationModel() == Reloc::Static)
++  // Exception: Darwin PPC32 in static mode still needs __nl_symbol_ptr
++  // stubs for external/weak symbols. Without them, ld64 rejects bare
++  // external HI16/LO16/HA16 relocations inside __TEXT,__text.
++  if (!HasLazyResolverStubs)
++    return false;
++  bool isDarwinPPC32 = isDarwin() && !isPPC64();
++  if (TM.getRelocationModel() == Reloc::Static && !isDarwinPPC32)
+     return false;
+   // If symbol visibility is hidden, the extra load is not needed if
+   // the symbol is definitely defined in the current translation unit.
+
+--- a/lib/Target/PowerPC/PPCAsmPrinter.cpp	2026-05-18 17:41:01.425501620 -0500
++++ b/lib/Target/PowerPC/PPCAsmPrinter.cpp	2026-05-18 17:41:01.441853810 -0500
+@@ -171,7 +171,11 @@
+     return;
+   case MachineOperand::MO_ExternalSymbol: {
+     // Computing the address of an external symbol, not calling it.
+-    if (TM.getRelocationModel() == Reloc::Static) {
++    //
++    // Darwin PPC32 must route external references through __nl_symbol_ptr
++    // even in Reloc::Static mode, otherwise ld64 rejects the resulting
++    // r_extern=1 HI16/LO16/HA16 reloc inside __TEXT,__text.
++    if (TM.getRelocationModel() == Reloc::Static && !Subtarget.isDarwin()) {
+       O << *GetExternalSymbolSymbol(MO.getSymbolName());
+       return;
+     }
+@@ -193,8 +197,12 @@
+     const GlobalValue *GV = MO.getGlobal();
+     MCSymbol *SymToPrint;
+ 
+-    // External or weakly linked global variables need non-lazily-resolved stubs
+-    if (TM.getRelocationModel() != Reloc::Static &&
++    // External or weakly linked global variables need non-lazily-resolved
++    // stubs. On Darwin PPC32 this is required even in Reloc::Static mode
++    // because the dynamic linker is always present and ld64 will not accept
++    // a bare r_extern=1 HI16/LO16/HA16 relocation against __TEXT,__text.
++    if ((TM.getRelocationModel() != Reloc::Static ||
++         Subtarget.isDarwin()) &&
+         (GV->isDeclaration() || GV->isWeakForLinker())) {
+       if (!GV->hasHiddenVisibility()) {
+         SymToPrint = GetSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
+
+--- a/lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp	2026-05-18 17:49:17.708163775 -0500
++++ b/lib/Target/PowerPC/MCTargetDesc/PPCMachObjectWriter.cpp	2026-05-18 17:49:17.724908648 -0500
+@@ -354,7 +354,23 @@
+     }
+ 
+     // Check whether we need an external or internal relocation.
++    //
++    // Defensive: on Darwin PPC32, an external HI16/LO16/HA16 relocation
++    // landing inside __TEXT,__text is rejected by ld64 (read-only-relocs).
++    // The PPCAsmPrinter Darwin-static fix should already route these through
++    // $non_lazy_ptr stubs; if a regression ever sends one through, fail
++    // loudly instead of producing a bad .o.
++    const MCSectionMachO &MachOSection =
++        static_cast<const MCSectionMachO &>(Fragment->getParent()->getSection());
+     if (Writer->doesSymbolRequireExternRelocation(SD)) {
++      if ((RelocType == MachO::PPC_RELOC_HI16 ||
++           RelocType == MachO::PPC_RELOC_LO16 ||
++           RelocType == MachO::PPC_RELOC_HA16) &&
++          MachOSection.getSegmentName() == "__TEXT" &&
++          MachOSection.getSectionName() == "__text")
++        report_fatal_error("Darwin PPC32 external half16 relocation for '" +
++                           SD->getSymbol().getName() +
++                           "' in __TEXT,__text requires a __nl_symbol_ptr stub");
+       IsExtern = 1;
+       Index = SD->getIndex();
+       // For external relocations, make sure to offset the fixup value to
+
+--- a/lib/Target/PowerPC/PPCISelLowering.cpp
++++ b/lib/Target/PowerPC/PPCISelLowering.cpp
+@@ -3214,8 +3214,11 @@
+     // far-call stubs may be outside relocation limits for a BL instruction.
+     if (!DAG.getTarget().getSubtarget<PPCSubtarget>().isJITCodeModel()) {
+       unsigned OpFlags = 0;
+-      if (DAG.getTarget().getRelocationModel() != Reloc::Static &&
+-          (PPCSubTarget.getTargetTriple().isMacOSX() &&
++      // Darwin PPC32 (pre-Leopard / Tiger) needs an explicit $stub for every
++      // external/weak call regardless of relocation model. Tiger ld64 does
++      // not auto-synthesize call stubs; a direct bl to an external symbol
++      // produces a BR24 reloc in __TEXT,__text that the linker rejects.
++      if ((PPCSubTarget.getTargetTriple().isMacOSX() &&
+            PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5)) &&
+           (G->getGlobal()->isDeclaration() ||
+            G->getGlobal()->isWeakForLinker())) {
+@@ -3238,9 +3241,10 @@
+   if (ExternalSymbolSDNode *S = dyn_cast<ExternalSymbolSDNode>(Callee)) {
+     unsigned char OpFlags = 0;
+ 
+-    if (DAG.getTarget().getRelocationModel() != Reloc::Static &&
+-        (PPCSubTarget.getTargetTriple().isMacOSX() &&
+-         PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5))) {
++    // Darwin PPC32 (pre-Leopard / Tiger): external calls need $stub regardless
++    // of relocation model (Tiger ld64 does not auto-synthesize call stubs).
++    if (PPCSubTarget.getTargetTriple().isMacOSX() &&
++        PPCSubTarget.getTargetTriple().isMacOSXVersionLT(10, 5)) {
+       // PC-relative references to external symbols should go through $stub,
+       // unless we're building with the leopard linker or later, which
+       // automatically synthesizes these stubs.
